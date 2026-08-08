@@ -125,11 +125,14 @@ LIGHT_THEME = "cosmo"
 THEME_LABELS = [("跟随系统", "system"), ("亮色", "light"), ("暗色", "dark")]
 
 # 日志配色：暗色 / 亮色两套
+# dim 为次要/细节日志（如 tscon 明细、主题切换提示）。
+# 暗色下原 #888888 在 darkly 输入区(#2b2b2b)对比度仅 ~4.1，低于 WCAG AA 4.5，提亮到 #b3b3b3(~6.9)。
+# 亮色下 #888888 在白底对比度 ~3.3，调深到 #6f6f6f(~4.6) 提升可读性。
 LOG_COLORS = {
     True: {"ok": "#2ecc71", "err": "#ff6b6b", "warn": "#f1c40f",
-           "dim": "#888888", "info": "#dddddd"},
+           "dim": "#b3b3b3", "info": "#dddddd"},
     False: {"ok": "#1e8449", "err": "#c0392b", "warn": "#b7791f",
-            "dim": "#888888", "info": "#222222"},
+            "dim": "#6f6f6f", "info": "#222222"},
 }
 
 
