@@ -12,5 +12,14 @@ dist/
 # 本地真实配置（含内网 IP / 账号，切勿提交）
 machines.json
 
+# 构建产物 EXE：发布版 EXE 用 `git add -f` 显式提交，避免旧版 / 临时 EXE 被误提交
+*.exe
+
+# 开发期测试脚本（非主程序，不提交）
+check_deploy_script.py
+smoke_logic.py
+smoke_test.py
+test_deploy_flow.py
+
 # 临时文件
 *.log
