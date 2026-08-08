@@ -1,0 +1,16 @@
+# Python 虚拟环境与缓存
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# PyInstaller 构建产物
+build/
+dist/
+*.spec
+
+# 本地真实配置（含内网 IP / 账号，切勿提交）
+machines.json
+
+# 临时文件
+*.log

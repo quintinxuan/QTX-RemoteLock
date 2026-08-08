@@ -1,0 +1,23 @@
+{
+  "sshKeyPath": "%USERPROFILE%\\.ssh\\id_ed25519",
+  "theme": "system",
+  "columnWidths": {},
+  "sortColumn": "",
+  "sortDesc": false,
+  "machines": [
+    {
+      "name": "PC-01",
+      "ip": "192.168.1.101",
+      "sshUser": "admin",
+      "rdp": true,
+      "notes": "示例机器，请替换为你的实际主机"
+    },
+    {
+      "name": "PC-02",
+      "ip": "192.168.1.102",
+      "sshUser": "admin",
+      "rdp": false,
+      "notes": "rdp=false 的机器只支持锁定，不支持解锁（无远程桌面）"
+    }
+  ]
+}
