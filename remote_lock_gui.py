@@ -31,7 +31,7 @@ except Exception:  # noqa
 # 品牌与版本
 # ----------------------------------------------------------------------------
 APP_NAME = "QTX-RemoteLock"
-APP_VERSION = "1.0.8"
+APP_VERSION = "1.0.9"
 APP_TITLE = "%s v%s" % (APP_NAME, APP_VERSION)
 
 _ICON_TMP = None
