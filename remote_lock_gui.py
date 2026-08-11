@@ -20,6 +20,7 @@ from tkinter import messagebox
 import base64
 import ttkbootstrap as ttkb
 from ttkbootstrap.constants import *
+from app_icon import APP_ICON_B64
 
 try:
     import paramiko
@@ -30,8 +31,28 @@ except Exception:  # noqa
 # 品牌与版本
 # ----------------------------------------------------------------------------
 APP_NAME = "QTX-RemoteLock"
-APP_VERSION = "1.0.6"
+APP_VERSION = "1.0.7"
 APP_TITLE = "%s v%s" % (APP_NAME, APP_VERSION)
+
+_ICON_TMP = None
+def set_window_icon(win):
+    """为 tk/ttk 窗口设置标题栏与任务栏图标（运行时生效，与 EXE 外壳图标无关）。
+
+    图标以 base64 内嵌在 app_icon.py，解码后写入临时 .ico 并设置；只写一次并缓存。
+    """
+    global _ICON_TMP
+    if _ICON_TMP is None:
+        try:
+            data = base64.b64decode(APP_ICON_B64)
+            fd, _ICON_TMP = tempfile.mkstemp(suffix=".ico", prefix="qtxlock_")
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+        except Exception:
+            return
+    try:
+        win.wm_iconbitmap(_ICON_TMP)
+    except Exception:
+        pass
 
 # ----------------------------------------------------------------------------
 # 配置路径：放在 %APPDATA% 下，保证单文件 EXE 也能持久化读写
@@ -226,6 +247,7 @@ def show_dialog(parent, title, message, kind="info", ask=False,
         return None
 
     win = ttkb.Toplevel(parent)
+    set_window_icon(win)
     win.title(title)
     win.transient(parent)
     win.resizable(False, False)
@@ -687,6 +709,7 @@ class RemoteLockApp:
 
     def __init__(self, root):
         self.root = root
+        set_window_icon(root)
         self.cfg = load_config()
         self.selection = {}        # name -> bool（勾选用于本次操作）
         self.status = {}           # name -> 文本
@@ -958,6 +981,7 @@ class RemoteLockApp:
     # ---- CRUD ----
     def machine_dialog(self, title, data=None):
         win = ttkb.Toplevel(self.root)
+        set_window_icon(win)
         win.title(title)
         win.transient(self.root)
         win.resizable(False, False)
@@ -1115,6 +1139,7 @@ class RemoteLockApp:
         """返回 {'items': [(name, password)...], 'autostart': bool,
                   'rdp': bool, 'syncRdp': bool} 或 None"""
         win = ttkb.Toplevel(self.root)
+        set_window_icon(win)
         win.title("一键部署 SSH 密钥")
         win.transient(self.root)
         apply_titlebar(win, self.dark)
