@@ -13,6 +13,7 @@ import tempfile
 import random
 import string
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import subprocess
 import tkinter as tk
 from tkinter import messagebox
@@ -31,7 +32,7 @@ except Exception:  # noqa
 # 品牌与版本
 # ----------------------------------------------------------------------------
 APP_NAME = "QTX-RemoteLock"
-APP_VERSION = "1.0.9"
+APP_VERSION = "1.0.10"
 APP_TITLE = "%s v%s" % (APP_NAME, APP_VERSION)
 
 _ICON_TMP = None
@@ -1277,36 +1278,48 @@ class RemoteLockApp:
 
     def _do_action(self, action, names):
         key = os.path.expandvars(self.cfg["sshKeyPath"])
-        ok = fail = off = skip = 0
-        for name in names:
+
+        def work(name):
             m = next((x for x in self.cfg["machines"] if x["name"] == name), None)
             if not m:
-                continue
+                return name, "skip", None
             self.set_status(name, "执行中")
             try:
                 if action == "lock":
-                    r = lock_machine(m, key, self.log_msg)
-                    if r:
+                    return name, "lock", lock_machine(m, key, self.log_msg)
+                return name, "unlock", unlock_machine(m, key, self.log_msg)
+            except Exception as e:  # noqa
+                return name, "exc", e
+
+        ok = fail = skip = 0
+        with ThreadPoolExecutor(max_workers=len(names) or 1) as ex:
+            futs = {ex.submit(work, n): n for n in names}
+            for fut in as_completed(futs):
+                name, kind, res = fut.result()
+                if kind == "skip":
+                    skip += 1
+                    self.set_status(name, "跳过")
+                elif kind == "exc":
+                    fail += 1
+                    self.set_status(name, "异常")
+                    self.log_msg(f"[{name}] 异常: {res}", "err")
+                elif kind == "lock":
+                    if res:
                         ok += 1
                         self.set_status(name, "已锁屏")
                     else:
                         fail += 1
                         self.set_status(name, "失败")
-                else:
-                    r = unlock_machine(m, key, self.log_msg)
-                    if r is None:
+                else:  # unlock
+                    if res is None:
                         skip += 1
                         self.set_status(name, "跳过")
-                    elif r:
+                    elif res:
                         ok += 1
                         self.set_status(name, "已解锁")
                     else:
                         fail += 1
                         self.set_status(name, "失败")
-            except Exception as e:  # noqa
-                fail += 1
-                self.set_status(name, "异常")
-                self.log_msg(f"[{name}] 异常: {e}", "err")
         self.log_msg(f"=== 完成: 成功 {ok}  失败 {fail}  跳过 {skip} ===", "ok")
 
     # ---- 线程调度 ----
