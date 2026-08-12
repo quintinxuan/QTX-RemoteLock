@@ -32,7 +32,7 @@ except Exception:  # noqa
 # 品牌与版本
 # ----------------------------------------------------------------------------
 APP_NAME = "QTX-RemoteLock"
-APP_VERSION = "1.0.11"
+APP_VERSION = "1.0.12"
 APP_TITLE = "%s v%s" % (APP_NAME, APP_VERSION)
 
 _ICON_TMP = None
@@ -312,14 +312,42 @@ def ssh_opts(key_path):
             "-o", "BatchMode=yes", "-i", key_path]
 
 
-def run_ssh(user, ip, cmd, key, timeout=40):
-    """返回 (returncode, output)。cmd 作为单个参数传给远程 shell。"""
+# SSH 主机密钥变更的报错关键字；命中后自动移除旧记录并重试，免去用户手动执行 ssh-keygen -R
+_HOST_KEY_ERR = "REMOTE HOST IDENTIFICATION HAS CHANGED"
+
+
+def _try_fix_host_key(ip, log):
+    """主机密钥变更时，移除 known_hosts 中该主机的旧记录，使下次连接能自动接受新密钥。
+    仅删除该 IP 对应的条目（ssh-keygen -R），不影响其他主机，也不删除任何密钥文件。"""
     try:
+        subprocess.run(
+            ["ssh-keygen", "-R", ip],
+            capture_output=True, text=True, timeout=20,
+            stdin=subprocess.DEVNULL, **HIDE_KW)
+        if log:
+            log(f"[SSH] {ip} 主机密钥已变更，已自动移除旧信任记录并重试连接", "warn")
+        return True
+    except Exception as e:  # noqa
+        if log:
+            log(f"[SSH] 自动移除 {ip} 旧密钥记录失败: {e}", "err")
+        return False
+
+
+def run_ssh(user, ip, cmd, key, timeout=40, log=None):
+    """返回 (returncode, output)。cmd 作为单个参数传给远程 shell。
+    若遇到主机密钥变更 (REMOTE HOST IDENTIFICATION HAS CHANGED)，自动移除旧记录并重试一次，
+    无需用户手动执行 ssh-keygen -R。"""
+    def _once():
         proc = subprocess.run(
             ["ssh"] + ssh_opts(key) + [f"{user}@{ip}", cmd],
             capture_output=True, text=True, timeout=timeout,
             stdin=subprocess.DEVNULL, **HIDE_KW)
-        out = (proc.stdout or "") + (proc.stderr or "")
+        return proc, (proc.stdout or "") + (proc.stderr or "")
+    try:
+        proc, out = _once()
+        if _HOST_KEY_ERR in out:
+            if _try_fix_host_key(ip, log):
+                proc, out = _once()
         return proc.returncode, out.strip()
     except subprocess.TimeoutExpired:
         return -1, "TIMEOUT"
@@ -327,20 +355,27 @@ def run_ssh(user, ip, cmd, key, timeout=40):
         return -1, str(e)
 
 
-def run_scp(local, remote, user, ip, key, timeout=30):
-    try:
+def run_scp(local, remote, user, ip, key, timeout=30, log=None):
+    """上传文件。遇到主机密钥变更同样自动移除旧记录并重试一次。"""
+    def _once():
         proc = subprocess.run(
             ["scp"] + ssh_opts(key) + [local, f"{user}@{ip}:{remote}"],
             capture_output=True, text=True, timeout=timeout,
             stdin=subprocess.DEVNULL, **HIDE_KW)
+        return proc, (proc.stdout or "") + (proc.stderr or "")
+    try:
+        proc, out = _once()
+        if _HOST_KEY_ERR in out:
+            if _try_fix_host_key(ip, log):
+                proc, out = _once()
         return proc.returncode
-    except Exception:
+    except Exception:  # noqa
         return -1
 
 
-def rdp_session_id(user, ip, key):
+def rdp_session_id(user, ip, key, log=None):
     """返回当前 RDP 会话的 SID（如 '1'），无则空字符串。"""
-    rc, out = run_ssh(user, ip, 'query session 2>nul | findstr rdp-tcp#', key)
+    rc, out = run_ssh(user, ip, 'query session 2>nul | findstr rdp-tcp#', key, log=log)
     line = (out or "").strip()
     if not line:
         return ""
@@ -366,7 +401,7 @@ def lock_machine(m, key, log):
         f'& schtasks /delete /tn {task} /f >nul 2>&1'
     )
     log(f"[{name}] 下发锁屏指令...")
-    rc, out = run_ssh(user, ip, cmd, key, timeout=25)
+    rc, out = run_ssh(user, ip, cmd, key, timeout=25, log=log)
     out = out or ""
     if "LOCK_OK" in out:
         log(f"[{name}] 已锁屏 OK", "ok")
@@ -391,7 +426,7 @@ def unlock_machine(m, key, log):
             '/v UserAuthentication /t REG_DWORD /d 0 /f >nul 2>&1 & '
             'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp" '
             '/v SecurityLayer /t REG_DWORD /d 0 /f >nul 2>&1 & echo DONE')
-    rc, out = run_ssh(user, ip, cmd1, key)
+    rc, out = run_ssh(user, ip, cmd1, key, log=log)
     if "DONE" in out:
         log(f"[{name}]     NLA 已关闭", "ok")
     else:
@@ -413,7 +448,7 @@ def unlock_machine(m, key, log):
     try:
         with os.fdopen(fd, "w", encoding="ascii", newline="") as f:
             f.write(tscon_bat)
-        rc = run_scp(local_bat, remote_batch, user, ip, key)
+        rc = run_scp(local_bat, remote_batch, user, ip, key, log=log)
     finally:
         try: os.remove(local_bat)
         except Exception: pass
@@ -428,19 +463,19 @@ def unlock_machine(m, key, log):
         mstsc = subprocess.Popen(["mstsc", f"/v:{ip}", "/w:1920", "/h:1080"])
     except Exception as e:  # noqa
         log(f"[{name}]     无法启动 mstsc: {e}", "err")
-        run_ssh(user, ip, f"del /q {remote_batch}", key)
+        run_ssh(user, ip, f"del /q {remote_batch}", key, log=log)
         return False
     time.sleep(0.8)
     if mstsc.poll() is not None:
         log(f"[{name}]     mstsc 已退出", "err")
-        run_ssh(user, ip, f"del /q {remote_batch}", key)
+        run_ssh(user, ip, f"del /q {remote_batch}", key, log=log)
         return False
 
     # 4. 轮询 RDP 会话
     log(f"[{name}] [4] 等待 RDP 会话...")
     sid = ""
     for _ in range(20):
-        sid = rdp_session_id(user, ip, key)
+        sid = rdp_session_id(user, ip, key, log=log)
         if sid:
             break
         time.sleep(0.6)
@@ -448,7 +483,7 @@ def unlock_machine(m, key, log):
         log(f"[{name}]     RDP 未连上，解锁失败", "err")
         try: mstsc.terminate()
         except Exception: pass
-        run_ssh(user, ip, f"del /q {remote_batch}", key)
+        run_ssh(user, ip, f"del /q {remote_batch}", key, log=log)
         return False
     log(f"[{name}]     会话 SID={sid}", "ok")
 
@@ -457,16 +492,16 @@ def unlock_machine(m, key, log):
     sch = (f'schtasks /create /sc once /st 00:00 /tn TSCON_UNLOCK '
            f'/tr "{remote_batch} {sid}" /ru SYSTEM /f >nul 2>&1 & '
            f'schtasks /run /tn TSCON_UNLOCK >nul 2>&1 & echo SCHTASKS_OK')
-    rc, out = run_ssh(user, ip, sch, key)
+    rc, out = run_ssh(user, ip, sch, key, log=log)
     if "SCHTASKS_OK" in out:
         log(f"[{name}]     已触发", "ok")
     else:
         log(f"[{name}]     警告: {out[:80]}", "warn")
     time.sleep(1.5)
-    run_ssh(user, ip, "schtasks /delete /tn TSCON_UNLOCK /f >nul 2>&1", key)
+    run_ssh(user, ip, "schtasks /delete /tn TSCON_UNLOCK /f >nul 2>&1", key, log=log)
 
     tscon_str = ""
-    rc, out = run_ssh(user, ip, "type C:\\Windows\\Temp\\tscon_result.txt 2>nul", key)
+    rc, out = run_ssh(user, ip, "type C:\\Windows\\Temp\\tscon_result.txt 2>nul", key, log=log)
     tscon_str = (out or "").strip()
     if tscon_str:
         log(f"[{name}]     [tscon] {tscon_str}", "dim")
@@ -476,7 +511,7 @@ def unlock_machine(m, key, log):
     switched = False
     for _ in range(8):
         time.sleep(0.8)
-        if not rdp_session_id(user, ip, key):
+        if not rdp_session_id(user, ip, key, log=log):
             switched = True
             break
 
@@ -493,22 +528,22 @@ def unlock_machine(m, key, log):
     # 8. 最终验证
     log(f"[{name}] [8] 最终验证...")
     time.sleep(0.5)
-    final_sid = rdp_session_id(user, ip, key)
+    final_sid = rdp_session_id(user, ip, key, log=log)
     cleanup = f"del /q {remote_batch} C:\\Windows\\Temp\\tscon_result.txt"
     if not final_sid:
         if "TSCON_RC=0" in tscon_str:
             log(f"[{name}] 解锁成功 (tscon rc=0, rdp-tcp# 消失)", "ok")
-            run_ssh(user, ip, cleanup, key)
+            run_ssh(user, ip, cleanup, key, log=log)
             return True
         if "SCHTASKS_OK" in out and tscon_str == "":
             log(f"[{name}] 解锁成功 (schtasks 触发, rdp-tcp# 消失)", "ok")
-            run_ssh(user, ip, cleanup, key)
+            run_ssh(user, ip, cleanup, key, log=log)
             return True
         log(f"[{name}] 结果不确定: tscon={tscon_str}", "warn")
-        run_ssh(user, ip, cleanup, key)
+        run_ssh(user, ip, cleanup, key, log=log)
         return True
     log(f"[{name}] 解锁失败 (rdp-tcp# 仍在)", "err")
-    run_ssh(user, ip, cleanup, key)
+    run_ssh(user, ip, cleanup, key, log=log)
     return False
 
 
