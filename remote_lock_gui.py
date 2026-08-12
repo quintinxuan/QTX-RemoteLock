@@ -32,7 +32,7 @@ except Exception:  # noqa
 # 品牌与版本
 # ----------------------------------------------------------------------------
 APP_NAME = "QTX-RemoteLock"
-APP_VERSION = "1.0.10"
+APP_VERSION = "1.0.11"
 APP_TITLE = "%s v%s" % (APP_NAME, APP_VERSION)
 
 _ICON_TMP = None
@@ -407,12 +407,16 @@ def unlock_machine(m, key, log):
         "%TC% %1 /dest:console > C:\\Windows\\Temp\\tscon_result.txt 2>&1\r\n"
         "echo TSCON_RC=%errorlevel% >> C:\\Windows\\Temp\\tscon_result.txt\r\n"
     )
-    local_bat = os.path.join(tempfile.gettempdir(), "unlock_tscon.bat")
-    with open(local_bat, "w", encoding="ascii", newline="") as f:
-        f.write(tscon_bat)
-    rc = run_scp(local_bat, remote_batch, user, ip, key)
-    try: os.remove(local_bat)
-    except Exception: pass
+    # 并发解锁时每台机器必须使用独立的本地临时文件，
+    # 否则多线程会轮流写/删同一个 unlock_tscon.bat，导致其他线程 scp 读不到文件而失败。
+    fd, local_bat = tempfile.mkstemp(suffix=".bat", prefix=f"unlock_tscon_{ip.replace('.', '_')}_")
+    try:
+        with os.fdopen(fd, "w", encoding="ascii", newline="") as f:
+            f.write(tscon_bat)
+        rc = run_scp(local_bat, remote_batch, user, ip, key)
+    finally:
+        try: os.remove(local_bat)
+        except Exception: pass
     if rc != 0:
         log(f"[{name}]     离线 (scp 失败)", "warn")
         return False
