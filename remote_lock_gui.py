@@ -32,7 +32,7 @@ except Exception:  # noqa
 # 品牌与版本
 # ----------------------------------------------------------------------------
 APP_NAME = "QTX-RemoteLock"
-APP_VERSION = "1.0.14"
+APP_VERSION = "1.0.15"
 APP_TITLE = "%s v%s" % (APP_NAME, APP_VERSION)
 
 _ICON_TMP = None
@@ -374,15 +374,40 @@ def run_scp(local, remote, user, ip, key, timeout=30, log=None):
 
 
 def rdp_session_id(user, ip, key, log=None):
-    """返回当前 RDP 会话的 SID（如 '1'），无则空字符串。"""
+    """返回当前 RDP 会话的 SID（如 '1'），无则空字符串。
+
+    注意：query session 在「连上但未登录」时该行没有用户名，列会左移，
+    例如 'rdp-tcp#0   1   Connected'，因此不能固定取第 3 段。
+    正确做法：找 rdp-tcp# 之后的第一个纯数字 token 作为会话 ID。
+    """
     rc, out = run_ssh(user, ip, 'query session 2>nul | findstr rdp-tcp#', key, log=log)
-    line = (out or "").strip()
-    if not line:
-        return ""
-    parts = line.split()
-    if len(parts) >= 3:
-        return parts[2]
+    for line in (out or "").splitlines():
+        line = line.strip()
+        if "rdp-tcp#" not in line:
+            continue
+        for tok in line.split()[1:]:
+            if tok.isdigit():
+                return tok
     return ""
+
+
+def rdp_session_authed(user, ip, key, log=None):
+    """RDP 会话是否已登录（有用户名）。
+
+    已登录:   'rdp-tcp#0   USER   1   Active'（rdp-tcp# 后首个 token 是用户名）
+    仅连接未登录: 'rdp-tcp#0   1   Connected'（rdp-tcp# 后首个 token 是数字 ID，无用户名）
+    tscon 只能把「已登录」的 RDP 会话切回控制台实现解锁；未登录（无凭据）无法解锁。
+    """
+    rc, out = run_ssh(user, ip, 'query session 2>nul | findstr rdp-tcp#', key, log=log)
+    for line in (out or "").splitlines():
+        line = line.strip()
+        if "rdp-tcp#" not in line:
+            continue
+        for tok in line.split()[1:]:
+            if tok.isdigit():
+                return False
+            return True
+    return False
 
 
 # ----------------------------------------------------------------------------
@@ -486,6 +511,20 @@ def unlock_machine(m, key, log):
         run_ssh(user, ip, f"del /q {remote_batch}", key, log=log)
         return False
     log(f"[{name}]     会话 SID={sid}", "ok")
+    if not sid.isdigit():
+        log(f"[{name}]     RDP 会话 SID 解析异常: {sid!r}，解锁失败", "err")
+        try: mstsc.terminate()
+        except Exception: pass
+        run_ssh(user, ip, f"del /q {remote_batch}", key, log=log)
+        return False
+    # RDP 会话必须已登录（有用户名）才能 tscon 解锁；仅连上未登录（无凭据）无法解锁
+    if not rdp_session_authed(user, ip, key, log=log):
+        log(f"[{name}]     RDP 会话未登录（多半无 RDP 凭据），无法解锁。"
+            f"请先「部署密钥」或手动 mstsc /v:{ip} 登录一次并保存凭据", "err")
+        try: mstsc.terminate()
+        except Exception: pass
+        run_ssh(user, ip, f"del /q {remote_batch}", key, log=log)
+        return False
 
     # 5. schtasks 触发 tscon
     log(f"[{name}] [5] 触发 tscon (schtasks /ru SYSTEM)...")
@@ -497,14 +536,21 @@ def unlock_machine(m, key, log):
         log(f"[{name}]     已触发", "ok")
     else:
         log(f"[{name}]     警告: {out[:80]}", "warn")
-    time.sleep(1.5)
-    run_ssh(user, ip, "schtasks /delete /tn TSCON_UNLOCK /f >nul 2>&1", key, log=log)
+    # 等 tscon 真正执行完并写出结果（schtasks 异步，且切换会话本身需要时间）
+    time.sleep(2.0)
 
+    # 读取 tscon 结果（重试，避免 schtasks 尚未写出就被读到空）
     tscon_str = ""
-    rc, out = run_ssh(user, ip, "type C:\\Windows\\Temp\\tscon_result.txt 2>nul", key, log=log)
-    tscon_str = (out or "").strip()
+    for _ in range(4):
+        rc, out2 = run_ssh(user, ip, "type C:\\Windows\\Temp\\tscon_result.txt 2>nul", key, log=log)
+        tscon_str = (out2 or "").strip()
+        if tscon_str:
+            break
+        time.sleep(0.7)
     if tscon_str:
         log(f"[{name}]     [tscon] {tscon_str}", "dim")
+    # bat 已结束，再删 schtasks 任务（提前删可能杀掉正在写结果的 bat）
+    run_ssh(user, ip, "schtasks /delete /tn TSCON_UNLOCK /f >nul 2>&1", key, log=log)
 
     # 6. 验证会话已切换
     log(f"[{name}] [6] 验证会话切换...")
@@ -525,26 +571,34 @@ def unlock_machine(m, key, log):
     except Exception:
         pass
 
-    # 8. 最终验证
-    log(f"[{name}] [8] 最终验证...")
+    # 8. 最终判定
+    log(f"[{name}] [8] 最终判定...")
     time.sleep(0.5)
-    final_sid = rdp_session_id(user, ip, key, log=log)
     cleanup = f"del /q {remote_batch} C:\\Windows\\Temp\\tscon_result.txt"
-    if not final_sid:
-        if "TSCON_RC=0" in tscon_str:
-            log(f"[{name}] 解锁成功 (tscon rc=0, rdp-tcp# 消失)", "ok")
-            run_ssh(user, ip, cleanup, key, log=log)
-            return True
-        if "SCHTASKS_OK" in out and tscon_str == "":
-            log(f"[{name}] 解锁成功 (schtasks 触发, rdp-tcp# 消失)", "ok")
-            run_ssh(user, ip, cleanup, key, log=log)
-            return True
-        log(f"[{name}] 结果不确定: tscon={tscon_str}", "warn")
-        run_ssh(user, ip, cleanup, key, log=log)
-        return True
-    log(f"[{name}] 解锁失败 (rdp-tcp# 仍在)", "err")
+    # 解析 TSCON_RC（bat 末尾 echo TSCON_RC=<n>）
+    tscon_rc = None
+    for _line in tscon_str.splitlines():
+        if _line.strip().startswith("TSCON_RC="):
+            try:
+                tscon_rc = int(_line.strip().split("=", 1)[1])
+            except Exception:
+                pass
+            break
+
+    success = False
+    if tscon_rc == 0:
+        success = True
+        log(f"[{name}] 解锁成功 (tscon rc=0)", "ok")
+    elif tscon_rc is not None:
+        log(f"[{name}] 解锁失败: tscon rc={tscon_rc}（{tscon_str}）", "err")
+    elif switched:
+        # 无 RC 文本但 RDP 会话已消失，视为切换成功
+        success = True
+        log(f"[{name}] 解锁成功 (rdp-tcp# 已消失)", "ok")
+    else:
+        log(f"[{name}] 解锁失败: tscon 无结果且会话未切换 (tscon={tscon_str!r})", "err")
     run_ssh(user, ip, cleanup, key, log=log)
-    return False
+    return success
 
 
 # ----------------------------------------------------------------------------
