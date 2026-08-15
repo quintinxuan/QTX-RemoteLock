@@ -32,7 +32,7 @@ except Exception:  # noqa
 # 品牌与版本
 # ----------------------------------------------------------------------------
 APP_NAME = "QTX-RemoteLock"
-APP_VERSION = "1.0.13"
+APP_VERSION = "1.0.14"
 APP_TITLE = "%s v%s" % (APP_NAME, APP_VERSION)
 
 _ICON_TMP = None
@@ -742,18 +742,27 @@ def deploy_key(m, password, key_path, log, set_autostart=True, enable_rdp=True):
 def store_rdp_credential(ip, user, password, log=None):
     """把 RDP 凭据写入 Windows 凭据管理器，使 mstsc 解锁时能自动登录。
 
-    条目名用 TERMSRV/<ip>，与 mstsc 图形界面“记住凭据”写入的名称一致，
-    mstsc /v:<ip> 连接时会自动匹配。密码仅在本次调用以命令行参数传给 cmdkey，
-    不写入任何配置文件（machines.json 等）。
+    必须用 /generic 写入 LegacyGeneric(普通) 类型：mstsc 在 `mstsc /v:<ip>` 时只读取
+    LegacyGeneric 类型的 TERMSRV/<ip> 凭据；用 /add 写的是 Domain(域密码) 类型，
+    mstsc 完全不认，会导致连接时停在远程登录界面、无法自动登录（v1.0.13 的坑）。
+    写入前先 /delete 清掉该目标可能残留的旧凭据（含 Domain 类型），避免类型冲突。
+    密码仅在本次调用以命令行参数传给 cmdkey，不写入任何配置文件（machines.json 等）。
     """
+    target = "TERMSRV/" + ip
     try:
+        # 清掉可能残留的旧条目（Domain 类型 mstsc 不读，留着无用且易混淆）
+        try:
+            subprocess.run(["cmdkey", "/delete:" + target], capture_output=True,
+                           text=True, timeout=15, **HIDE_KW)
+        except Exception:  # noqa
+            pass
         proc = subprocess.run(
-            ["cmdkey", "/add:TERMSRV/" + ip, "/user:" + user, "/pass:" + password],
+            ["cmdkey", "/generic:" + target, "/user:" + user, "/pass:" + password],
             capture_output=True, text=True, timeout=15, **HIDE_KW)
         out = (proc.stdout or "") + (proc.stderr or "")
         if proc.returncode == 0:
             if log:
-                log(f"  RDP 凭据已存入凭据管理器（{user}@{ip}），解锁将自动登录", "ok")
+                log(f"  RDP 凭据已存入凭据管理器（{user}@{ip}，LegacyGeneric），解锁将自动登录", "ok")
             return True
         if log:
             log(f"  RDP 凭据存储失败 rc={proc.returncode}: {out.strip()[:160]}", "err")
