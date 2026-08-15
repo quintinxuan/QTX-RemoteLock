@@ -32,7 +32,7 @@ except Exception:  # noqa
 # 品牌与版本
 # ----------------------------------------------------------------------------
 APP_NAME = "QTX-RemoteLock"
-APP_VERSION = "1.0.12"
+APP_VERSION = "1.0.13"
 APP_TITLE = "%s v%s" % (APP_NAME, APP_VERSION)
 
 _ICON_TMP = None
@@ -739,6 +739,31 @@ def deploy_key(m, password, key_path, log, set_autostart=True, enable_rdp=True):
     return res
 
 
+def store_rdp_credential(ip, user, password, log=None):
+    """把 RDP 凭据写入 Windows 凭据管理器，使 mstsc 解锁时能自动登录。
+
+    条目名用 TERMSRV/<ip>，与 mstsc 图形界面“记住凭据”写入的名称一致，
+    mstsc /v:<ip> 连接时会自动匹配。密码仅在本次调用以命令行参数传给 cmdkey，
+    不写入任何配置文件（machines.json 等）。
+    """
+    try:
+        proc = subprocess.run(
+            ["cmdkey", "/add:TERMSRV/" + ip, "/user:" + user, "/pass:" + password],
+            capture_output=True, text=True, timeout=15, **HIDE_KW)
+        out = (proc.stdout or "") + (proc.stderr or "")
+        if proc.returncode == 0:
+            if log:
+                log(f"  RDP 凭据已存入凭据管理器（{user}@{ip}），解锁将自动登录", "ok")
+            return True
+        if log:
+            log(f"  RDP 凭据存储失败 rc={proc.returncode}: {out.strip()[:160]}", "err")
+        return False
+    except Exception as e:  # noqa
+        if log:
+            log(f"  RDP 凭据存储异常: {e}", "err")
+        return False
+
+
 # ----------------------------------------------------------------------------
 # GUI
 # ----------------------------------------------------------------------------
@@ -1240,6 +1265,17 @@ class RemoteLockApp:
                          variable=rdp_var, bootstyle="round-toggle").pack(anchor=W, pady=1)
         ttkb.Checkbutton(optf, text="根据系统版本自动回填 RDP 支持状态",
                          variable=sync_var, bootstyle="round-toggle").pack(anchor=W, pady=1)
+        rdp_cred_var = tk.BooleanVar(value=True)
+        ttkb.Checkbutton(optf, text="部署后保存 RDP 凭据到凭据管理器（解锁免输密码）",
+                         variable=rdp_cred_var, bootstyle="round-toggle").pack(anchor=W, pady=1)
+        rdpcf = ttkb.Frame(win)
+        rdpcf.pack(fill=X, padx=14, pady=(2, 2))
+        ttkb.Label(rdpcf, text="RDP 用户名（留空=与 SSH 用户相同）:",
+                   bootstyle="secondary").pack(side=LEFT)
+        rdp_user_var = tk.StringVar()
+        ttkb.Entry(rdpcf, textvariable=rdp_user_var, width=22).pack(side=LEFT, padx=6)
+        ttkb.Label(win, text="RDP 密码默认使用上方各机器的部署密码（即 Windows 登录密码）。",
+                   bootstyle="secondary").pack(anchor=W, padx=14, pady=(0, 6))
 
         result = {}
 
@@ -1254,7 +1290,9 @@ class RemoteLockApp:
             if not items:
                 return
             result["v"] = {"items": items, "autostart": auto_var.get(),
-                           "rdp": rdp_var.get(), "syncRdp": sync_var.get()}
+                           "rdp": rdp_var.get(), "syncRdp": sync_var.get(),
+                           "rdpCred": rdp_cred_var.get(),
+                           "rdpUser": rdp_user_var.get().strip()}
             win.destroy()
 
         btnf = ttkb.Frame(win)
@@ -1285,6 +1323,10 @@ class RemoteLockApp:
             if res and res.get("verified"):
                 ok += 1
                 self.set_status(name, "已部署")
+                if params.get("rdpCred"):
+                    rdp_user = params.get("rdpUser") or m["sshUser"]
+                    if store_rdp_credential(m["ip"], rdp_user, pw, self.log_msg):
+                        self.log_msg(f"[{name}] RDP 凭据已保存，解锁将自动登录", "ok")
                 if params["syncRdp"] and m.get("rdp", True) != res.get("rdpCapable", True):
                     m["rdp"] = res.get("rdpCapable", True)
                     changed = True
