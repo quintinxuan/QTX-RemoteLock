@@ -21,7 +21,7 @@ from tkinter import messagebox
 import base64
 import ttkbootstrap as ttkb
 from ttkbootstrap.constants import *
-from app_icon import APP_ICON_B64
+from app_icon import APP_ICON_B64, LOCK_CLOSED_B64, LOCK_OPEN_B64
 
 try:
     import paramiko
@@ -32,7 +32,7 @@ except Exception:  # noqa
 # 品牌与版本
 # ----------------------------------------------------------------------------
 APP_NAME = "QTX-RemoteLock"
-APP_VERSION = "1.0.15"
+APP_VERSION = "1.0.16"
 APP_TITLE = "%s v%s" % (APP_NAME, APP_VERSION)
 
 _ICON_TMP = None
@@ -830,10 +830,52 @@ def store_rdp_credential(ip, user, password, log=None):
 # ----------------------------------------------------------------------------
 # GUI
 # ----------------------------------------------------------------------------
+class ScrollableFrame(ttkb.Frame):
+    """Canvas + 竖向滚动条容器，内部 self.inner 用网格逐行装载机器。
+
+    ttkbootstrap 没有 .scrolled 模块，这里自绘等价容器。
+    """
+
+    def __init__(self, master, **kwargs):
+        super().__init__(master, **kwargs)
+        self.canvas = tk.Canvas(self, highlightthickness=0, bd=0)
+        self.vsb = ttkb.Scrollbar(self, orient=VERTICAL,
+                                  command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.vsb.set)
+        self.vsb.pack(side=RIGHT, fill=Y)
+        self.canvas.pack(side=LEFT, fill=BOTH, expand=YES)
+        self.inner = ttkb.Frame(self.canvas)
+        self._win = self.canvas.create_window((0, 0), window=self.inner,
+                                              anchor=NW)
+        self.inner.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind(
+            "<Configure>",
+            lambda e: self.canvas.itemconfig(self._win, width=e.width))
+        # 仅当光标在列表区时响应滚轮，避免影响其他控件
+        self.canvas.bind("<Enter>",
+                         lambda e: self.canvas.bind_all("<MouseWheel>", self._on_wheel))
+        self.canvas.bind("<Leave>",
+                         lambda e: self.canvas.unbind_all("<MouseWheel>"))
+
+    def _on_wheel(self, event):
+        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+
 class RemoteLockApp:
-    COLS = [("sel", "操作", 50), ("name", "名称", 110), ("ip", "IP", 130),
-            ("user", "SSH用户", 90), ("rdp", "RDP", 60),
-            ("status", "状态", 110), ("notes", "备注", 240)]
+    # 列定义：(id, 标题, 像素宽, 是否可排序)。"选择"和"操作"列不参与排序。
+    LIST_COLS = [
+        ("sel",    "选择",   46, False),
+        ("name",   "名称",  100, True),
+        ("ip",     "IP",    120, True),
+        ("user",   "SSH用户", 90, True),
+        ("rdp",    "RDP",    46, True),
+        ("status", "状态",   80, True),
+        ("notes",  "备注",  170, True),
+        ("ops",    "操作",  150, False),
+    ]
+    COL_W = {cid: w for cid, _, w, _ in LIST_COLS}
 
     def __init__(self, root):
         self.root = root
@@ -842,6 +884,12 @@ class RemoteLockApp:
         self.selection = {}        # name -> bool（勾选用于本次操作）
         self.status = {}           # name -> 文本
         self.busy = False
+        self.cells = {}            # name -> {col_id: widget}
+        self.sel_vars = {}         # name -> BooleanVar
+        self.focused_row = None    # 当前单击选中的行（用于编辑/删除）
+        self._hl = None            # 已高亮的行
+        self._hl_bg = "#dbeafe" if self.dark else "#33415c"
+        self._normal_bg = "SystemButtonFace"
 
         # 主题状态
         self.theme_mode = self.cfg.get("theme", "system")
@@ -898,34 +946,40 @@ class RemoteLockApp:
         ttkb.Button(bar, text="部署指引", bootstyle="link",
                     command=self.show_deploy_help).pack(side=RIGHT, padx=2)
 
-        # 机器表格（支持点击表头排序、拖拽列宽并持久化）
-        saved_w = self.cfg.get("columnWidths", {})
-        self.tree = ttkb.Treeview(root, columns=[c[0] for c in self.COLS],
-                                  show="headings", height=14)
-        for cid, label, w in self.COLS:
-            anchor = CENTER if cid in ("sel", "rdp") else W
-            self.tree.heading(cid, text=label,
-                              command=lambda c=cid: self.sort_by(c))
-            self.tree.column(cid, width=int(saved_w.get(cid, w)),
-                             minwidth=40, anchor=anchor,
-                             stretch=(cid == "notes"))
-        self.tree.pack(fill=BOTH, expand=YES, padx=10, pady=4)
-        self.tree.bind("<Button-1>", self.on_tree_click)
-        # 拖拽列分隔线后保存宽度（仅在确实拖过分隔线时触发）
-        self.tree.bind("<ButtonPress-1>", self.on_tree_press, add="+")
-        self.tree.bind("<ButtonRelease-1>", self.on_tree_release, add="+")
-        self._drag_sep = False
+        # 机器列表（自定义行列表，替代 Treeview；支持点击表头排序，每行带独立锁定/解锁按钮）
+        self.lock_closed_img = tk.PhotoImage(data=LOCK_CLOSED_B64)
+        self.lock_open_img = tk.PhotoImage(data=LOCK_OPEN_B64)
 
-        # 操作按钮区
+        # 列宽持久化（沿用旧版 columnWidths 配置键）
+        saved_w = self.cfg.get("columnWidths", {})
+        for cid in saved_w:
+            if cid in self.COL_W:
+                self.COL_W[cid] = int(saved_w[cid])
+
+        # 滚动容器：Canvas + 竖向滚动条，内部 self.inner 用网格布局逐行装载
+        self.list_frame = ScrollableFrame(root)
+        self.list_frame.pack(fill=BOTH, expand=YES, padx=10, pady=4)
+        self.inner = self.list_frame.inner
+        for c, (cid, _label, _w, _s) in enumerate(self.LIST_COLS):
+            self.inner.columnconfigure(
+                c, minsize=self.COL_W[cid], weight=(1 if cid == "notes" else 0))
+        self._build_header()
+        self._hl_bg = "#dbeafe" if self.dark else "#33415c"
+
+        # 操作按钮区（带锁头图标：锁定=闭合锁，解锁=开锁）
         act = ttkb.Frame(root)
         act.pack(fill=X, padx=10, pady=4)
-        ttkb.Button(act, text="锁定选中", bootstyle="warning", width=14,
+        ttkb.Button(act, text="锁定选中", image=self.lock_closed_img,
+                    compound=LEFT, bootstyle="warning", width=14,
                     command=lambda: self.run_action("lock", "selected")).pack(side=LEFT, padx=4)
-        ttkb.Button(act, text="解锁选中", bootstyle="warning", width=14,
+        ttkb.Button(act, text="解锁选中", image=self.lock_open_img,
+                    compound=LEFT, bootstyle="warning", width=14,
                     command=lambda: self.run_action("unlock", "selected")).pack(side=LEFT, padx=4)
-        ttkb.Button(act, text="锁定全部", bootstyle="success", width=14,
+        ttkb.Button(act, text="锁定全部", image=self.lock_closed_img,
+                    compound=LEFT, bootstyle="success", width=14,
                     command=lambda: self.run_action("lock", "all")).pack(side=LEFT, padx=4)
-        ttkb.Button(act, text="解锁全部", bootstyle="success", width=14,
+        ttkb.Button(act, text="解锁全部", image=self.lock_open_img,
+                    compound=LEFT, bootstyle="success", width=14,
                     command=lambda: self.run_action("unlock", "all")).pack(side=LEFT, padx=4)
 
         # 设置：SSH 密钥
@@ -945,9 +999,9 @@ class RemoteLockApp:
         self.log.pack(fill=BOTH, expand=YES, padx=10, pady=(2, 8))
         self.log.text.configure(state=DISABLED)
 
-        self.refresh_tree()
+        self.rebuild_rows()
 
-    # ---- 树操作 ----
+    # ---- 列表操作（自定义行列表，替代 Treeview）----
     def _sort_key(self, cid):
         """返回用于排序的 key 函数。IP 按数值段排，避免 .10 排在 .9 前面。"""
         def ip_key(m):
@@ -957,7 +1011,6 @@ class RemoteLockApp:
                 return (0, 0, 0, 0)
 
         return {
-            "sel": lambda m: not self.selection.get(m["name"], True),
             "name": lambda m: m.get("name", "").lower(),
             "ip": ip_key,
             "user": lambda m: m.get("sshUser", "").lower(),
@@ -967,7 +1020,10 @@ class RemoteLockApp:
         }.get(cid, lambda m: m.get("name", ""))
 
     def sort_by(self, cid):
-        """点击表头排序：同列再点切换升/降序。"""
+        """点击表头排序：同列再点切换升/降序。'选择'/'操作'列不可排序。"""
+        sortable = next((s for c, _, _, s in self.LIST_COLS if c == cid), False)
+        if not sortable:
+            return
         if self.sort_col == cid:
             self.sort_desc = not self.sort_desc
         else:
@@ -975,17 +1031,39 @@ class RemoteLockApp:
         self.cfg["sortColumn"] = self.sort_col
         self.cfg["sortDesc"] = self.sort_desc
         save_config(self.cfg)
-        self.refresh_tree()
+        self.rebuild_rows()
 
-    def _update_headings(self):
-        for cid, label, _ in self.COLS:
-            mark = ""
+    def _update_header(self):
+        for cid, lbl in self.header.items():
+            label = next(t for c, t, _, _ in self.LIST_COLS if c == cid)
+            text = label
             if cid == self.sort_col:
-                mark = "  ▼" if self.sort_desc else "  ▲"
-            self.tree.heading(cid, text=label + mark)
+                text += "  ▼" if self.sort_desc else "  ▲"
+            lbl.configure(text=text)
 
-    def refresh_tree(self):
-        self.tree.delete(*self.tree.get_children())
+    def _build_header(self):
+        self.header = {}
+        for c, (cid, label, _w, sortable) in enumerate(self.LIST_COLS):
+            lbl = ttkb.Label(self.inner, text=label, anchor=CENTER,
+                             font=("Segoe UI", 9, "bold"), bootstyle="secondary")
+            lbl.grid(row=0, column=c, sticky="ew", padx=1, pady=3)
+            if sortable:
+                lbl.configure(cursor="hand2")
+                lbl.bind("<Button-1>", lambda e, cid=cid: self.sort_by(cid))
+            self.header[cid] = lbl
+
+    def rebuild_rows(self):
+        """销毁现有数据行并依排序重建；表头（row 0）保持不变。"""
+        for name, widgets in self.cells.items():
+            for w in widgets.values():
+                try:
+                    w.destroy()
+                except Exception:  # noqa
+                    pass
+        self.cells = {}
+        self.sel_vars = {}
+        self.focused_row = None
+        self._hl = None
         rows = list(self.cfg["machines"])
         if self.sort_col:
             try:
@@ -993,50 +1071,96 @@ class RemoteLockApp:
                           reverse=self.sort_desc)
             except Exception:  # noqa
                 pass
-        self._update_headings()
-        for m in rows:
-            name = m["name"]
-            self.selection.setdefault(name, True)
-            st = self.status.get(name, "-")
-            self.tree.insert("", END, iid=name, values=(
-                "☑" if self.selection.get(name) else "☐",
-                name, m["ip"], m["sshUser"],
-                "是" if m.get("rdp", True) else "否",
-                st, m.get("notes", "")))
+        self._update_header()
+        for r, m in enumerate(rows, start=1):
+            self._build_row(m, r)
 
-    def on_tree_press(self, event):
-        """记录本次按下是否落在列分隔线上（用于判断是否发生列宽拖拽）。"""
-        self._drag_sep = self.tree.identify_region(event.x, event.y) == "separator"
+    def _build_row(self, m, r):
+        name = m["name"]
+        self.selection.setdefault(name, True)
+        var = tk.BooleanVar(value=self.selection[name])
+        self.sel_vars[name] = var
+        cells = {}
 
-    def on_tree_release(self, event):
-        if not self._drag_sep:
-            return
-        self._drag_sep = False
-        widths = {cid: int(self.tree.column(cid, "width"))
-                  for cid, _, _ in self.COLS}
-        if widths != self.cfg.get("columnWidths"):
-            self.cfg["columnWidths"] = widths
-            save_config(self.cfg)
+        cb = ttkb.Checkbutton(self.inner, variable=var, bootstyle="round-toggle",
+                              command=lambda n=name: self._on_check(n))
+        cb.grid(row=r, column=0, sticky="ew", padx=1)
+        cells["sel"] = cb
+        cb.bind("<Button-1>", lambda e, n=name: self.on_row_click(n))
 
-    def on_tree_click(self, event):
-        # 落在分隔线/表头上时不处理勾选，避免干扰拖拽与排序
-        if self.tree.identify_region(event.x, event.y) != "cell":
-            return
-        col = self.tree.identify_column(event.x)
-        if col != "#1":
-            return
-        row = self.tree.identify_row(event.y)
-        if not row:
-            return
-        self.selection[row] = not self.selection.get(row, True)
-        self.tree.set(row, "sel", "☑" if self.selection[row] else "☐")
+        name_l = ttkb.Label(self.inner, text=name, anchor=W)
+        name_l.grid(row=r, column=1, sticky="ew", padx=3)
+        cells["name"] = name_l
+
+        ip_l = ttkb.Label(self.inner, text=m["ip"], anchor=W)
+        ip_l.grid(row=r, column=2, sticky="ew", padx=3)
+        cells["ip"] = ip_l
+
+        user_l = ttkb.Label(self.inner, text=m["sshUser"], anchor=W)
+        user_l.grid(row=r, column=3, sticky="ew", padx=3)
+        cells["user"] = user_l
+
+        rdp_l = ttkb.Label(self.inner, text=("是" if m.get("rdp", True) else "否"),
+                           anchor=CENTER)
+        rdp_l.grid(row=r, column=4, sticky="ew", padx=1)
+        cells["rdp"] = rdp_l
+
+        st = self.status.get(name, "-")
+        status_l = ttkb.Label(self.inner, text=st, anchor=CENTER)
+        status_l.grid(row=r, column=5, sticky="ew", padx=1)
+        cells["status"] = status_l
+
+        notes_l = ttkb.Label(self.inner, text=m.get("notes", ""), anchor=W)
+        notes_l.grid(row=r, column=6, sticky="ew", padx=3)
+        cells["notes"] = notes_l
+
+        ops = ttkb.Frame(self.inner)
+        ops.grid(row=r, column=7, sticky="ew", padx=1)
+        ttkb.Button(ops, text="锁定", image=self.lock_closed_img, compound=LEFT,
+                    width=8, bootstyle="warning-outline",
+                    command=lambda n=name: self.run_action("lock", "one", n)).pack(side=LEFT, padx=1)
+        ttkb.Button(ops, text="解锁", image=self.lock_open_img, compound=LEFT,
+                    width=8, bootstyle="success-outline",
+                    command=lambda n=name: self.run_action("unlock", "one", n)).pack(side=LEFT, padx=1)
+        cells["ops"] = ops
+
+        for cid in ("name", "ip", "user", "rdp", "status", "notes"):
+            cells[cid].bind("<Button-1>", lambda e, n=name: self.on_row_click(n))
+
+        self.cells[name] = cells
+
+    def _on_check(self, name):
+        self.focused_row = name
+        self.selection[name] = self.sel_vars[name].get()
+        self._highlight(name)
         if self.sort_col == "sel":
-            self.refresh_tree()
+            self.rebuild_rows()
+
+    def on_row_click(self, name):
+        self.focused_row = name
+        self._highlight(name)
+
+    def _highlight(self, name):
+        prev = getattr(self, "_hl", None)
+        if prev and prev in self.cells:
+            for w in self.cells[prev].values():
+                try:
+                    w.configure(background=self._normal_bg)
+                except Exception:  # noqa
+                    pass
+        if name in self.cells:
+            for w in self.cells[name].values():
+                try:
+                    w.configure(background=self._hl_bg)
+                except Exception:  # noqa
+                    pass
+        self._hl = name
 
     def set_all_selection(self, val):
         for m in self.cfg["machines"]:
             self.selection[m["name"]] = val
-        self.refresh_tree()
+        for name, var in self.sel_vars.items():
+            var.set(val)
 
     # ---- 主题 ----
     def on_theme_change(self, _event=None):
@@ -1170,15 +1294,13 @@ class RemoteLockApp:
         self.cfg["machines"].append(data)
         save_config(self.cfg)
         self.selection[data["name"]] = True
-        self.refresh_tree()
+        self.rebuild_rows()
         self.log_msg(f"已新增机器 {data['name']} ({data['ip']})")
 
     def edit_selected(self):
-        # 用树中当前聚焦/高亮的行（iid 即机器名）
-        focused = self.tree.focus()
-        name = focused if focused else None
-        if not name:
-            # 退而求其次：取第一个被勾选的
+        # 优先用单击选中的行，其次回退到第一个被勾选的
+        name = getattr(self, "focused_row", None)
+        if not name or not any(x["name"] == name for x in self.cfg["machines"]):
             picked = [n for n, v in self.selection.items() if v]
             name = picked[0] if picked else None
         if not name:
@@ -1195,13 +1317,12 @@ class RemoteLockApp:
             return
         m.update(data)
         save_config(self.cfg)
-        self.refresh_tree()
+        self.rebuild_rows()
         self.log_msg(f"已更新机器 {name}")
 
     def delete_selected(self):
-        focused = self.tree.focus()
-        name = focused if focused else None
-        if not name:
+        name = getattr(self, "focused_row", None)
+        if not name or not any(x["name"] == name for x in self.cfg["machines"]):
             picked = [n for n, v in self.selection.items() if v]
             name = picked[0] if picked else None
         if not name:
@@ -1213,7 +1334,7 @@ class RemoteLockApp:
         self.selection.pop(name, None)
         self.status.pop(name, None)
         save_config(self.cfg)
-        self.refresh_tree()
+        self.rebuild_rows()
         self.log_msg(f"已删除机器 {name}")
 
     def save_settings(self):
@@ -1223,8 +1344,8 @@ class RemoteLockApp:
 
     # ---- 连接测试 ----
     def test_selected(self):
-        focused = self.tree.focus()
-        targets = [focused] if focused else [n for n, v in self.selection.items() if v]
+        name = getattr(self, "focused_row", None)
+        targets = [name] if name else [n for n, v in self.selection.items() if v]
         if not targets:
             self.info("请先选中要测试的机器")
             return
@@ -1402,17 +1523,19 @@ class RemoteLockApp:
         params["items"] = []
         if changed:
             save_config(self.cfg)
-            self.root.after(0, self.refresh_tree)
+            self.root.after(0, self.rebuild_rows)
         self.log_msg(f"=== 部署完成: 成功 {ok}  失败 {fail} ===", "ok" if fail == 0 else "warn")
 
     # ---- 执行锁/解锁 ----
-    def run_action(self, action, scope):
+    def run_action(self, action, scope, name=None):
         if self.busy:
             self.info("上一批操作正在进行，请稍候")
             return
         targets = []
         if scope == "all":
             targets = [m["name"] for m in self.cfg["machines"]]
+        elif scope == "one":
+            targets = [name] if name else []
         else:
             targets = [n for n, v in self.selection.items() if v]
         if not targets:
@@ -1501,8 +1624,12 @@ class RemoteLockApp:
         self.root.after(0, lambda: self._update_status_cell(name, text))
 
     def _update_status_cell(self, name, text):
-        if self.tree.exists(name):
-            self.tree.set(name, "status", text)
+        w = self.cells.get(name, {}).get("status")
+        if w:
+            try:
+                w.configure(text=text)
+            except Exception:  # noqa
+                pass
 
     def log_msg(self, msg, level="info"):
         palette = LOG_COLORS[bool(getattr(self, "dark", True))]
