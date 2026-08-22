@@ -888,13 +888,14 @@ class RemoteLockApp:
         self.sel_vars = {}         # name -> BooleanVar
         self.focused_row = None    # 当前单击选中的行（用于编辑/删除）
         self._hl = None            # 已高亮的行
-        self._hl_bg = "#dbeafe" if self.dark else "#33415c"
         self._normal_bg = "SystemButtonFace"
 
         # 主题状态
         self.theme_mode = self.cfg.get("theme", "system")
         self.dark = resolve_dark(self.theme_mode)
         self._last_sys_dark = system_is_dark()
+
+        self._hl_bg = "#dbeafe" if self.dark else "#33415c"
 
         # 排序状态
         self.sort_col = self.cfg.get("sortColumn", "") or ""
