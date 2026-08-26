@@ -21,7 +21,7 @@ from tkinter import messagebox
 import base64
 import ttkbootstrap as ttkb
 from ttkbootstrap.constants import *
-from app_icon import APP_ICON_B64, LOCK_CLOSED_B64, LOCK_OPEN_B64
+from app_icon import APP_ICON_B64, LOCK_CLOSED_B64, LOCK_OPEN_B64, DETECT_B64
 
 try:
     import paramiko
@@ -413,6 +413,37 @@ def rdp_session_authed(user, ip, key, log=None):
 # ----------------------------------------------------------------------------
 # 业务操作
 # ----------------------------------------------------------------------------
+DET_CMD = (
+    'powershell -NoProfile -Command '
+    '"if(Get-Process -Name logonui -ErrorAction SilentlyContinue)'
+    '{Write-Output RL_LOCKED}else{Write-Output RL_UNLOCKED}"'
+)
+
+
+def detect_state(m, key, log):
+    """检测远程机器当前是否处于锁屏状态。
+
+    返回 (rc, state)，state 取值：
+        'locked'   - logonui.exe 存在，判断为已锁屏
+        'unlocked' - logonui.exe 不存在，判断为未锁屏
+        'offline'  - SSH 连接失败/超时
+        'unknown'  - 输出无法识别
+
+    说明：Windows 锁屏时会拉起 logonui.exe 显示安全桌面；用户已登录且
+    未锁屏时 logonui.exe 通常不存在。此为经验性检测，若与实际情况不符
+    请反馈。
+    """
+    user, ip = m["sshUser"], m["ip"]
+    rc, out = run_ssh(user, ip, DET_CMD, key, timeout=15, log=log)
+    if rc != 0:
+        return rc, "offline"
+    if "RL_LOCKED" in out:
+        return rc, "locked"
+    if "RL_UNLOCKED" in out:
+        return rc, "unlocked"
+    return rc, "unknown"
+
+
 def lock_machine(m, key, log):
     """内联 SSH 一次性下发 schtasks，不再上传 bat，被控机零文件落地。"""
     name, ip, user = m["name"], m["ip"], m["sshUser"]
@@ -866,16 +897,19 @@ class ScrollableFrame(ttkb.Frame):
 class RemoteLockApp:
     # 列定义：(id, 标题, 像素宽, 是否可排序)。"选择"和"操作"列不参与排序。
     LIST_COLS = [
-        ("sel",    "选择",   46, False),
+        ("sel",    "选择",   46, False),  # 不参与排序
         ("name",   "名称",  100, True),
         ("ip",     "IP",    120, True),
         ("user",   "SSH用户", 90, True),
         ("rdp",    "RDP",    46, True),
         ("status", "状态",   80, True),
-        ("notes",  "备注",  170, True),
-        ("ops",    "操作",  150, False),
+        ("ops",    "操作",  112, False), # 不参与排序；放备注前，避免被挤到显示区外
+        ("notes",  "备注",  160, True),  # 最后一列，弹性填充
     ]
     COL_W = {cid: w for cid, _, w, _ in LIST_COLS}
+    COL_IDX = {}
+    for _i, (_cid, _l, _w, _s) in enumerate(LIST_COLS):
+        COL_IDX[_cid] = _i
 
     def __init__(self, root):
         self.root = root
@@ -950,6 +984,12 @@ class RemoteLockApp:
         # 机器列表（自定义行列表，替代 Treeview；支持点击表头排序，每行带独立锁定/解锁按钮）
         self.lock_closed_img = tk.PhotoImage(data=LOCK_CLOSED_B64)
         self.lock_open_img = tk.PhotoImage(data=LOCK_OPEN_B64)
+        self.detect_img = tk.PhotoImage(data=DETECT_B64)
+
+        # 图标按钮紧凑化：彩色填充样式减小内边距，使图标按钮接近方形
+        _st = ttkb.Style()
+        for _bs in ("warning.TButton", "success.TButton", "info.TButton"):
+            _st.configure(_bs, padding=(3, 3))
 
         # 列宽持久化（沿用旧版 columnWidths 配置键）
         saved_w = self.cfg.get("columnWidths", {})
@@ -967,7 +1007,7 @@ class RemoteLockApp:
         self._build_header()
         self._hl_bg = "#dbeafe" if self.dark else "#33415c"
 
-        # 操作按钮区（带锁头图标：锁定=闭合锁，解锁=开锁）
+        # 操作按钮区（锁定/解锁/检测；白图标配彩色填充按钮，避免顺色）
         act = ttkb.Frame(root)
         act.pack(fill=X, padx=10, pady=4)
         ttkb.Button(act, text="锁定选中", image=self.lock_closed_img,
@@ -982,6 +1022,9 @@ class RemoteLockApp:
         ttkb.Button(act, text="解锁全部", image=self.lock_open_img,
                     compound=LEFT, bootstyle="success", width=14,
                     command=lambda: self.run_action("unlock", "all")).pack(side=LEFT, padx=4)
+        ttkb.Button(act, text="检测状态", image=self.detect_img,
+                    compound=LEFT, bootstyle="info", width=14,
+                    command=lambda: self.run_action("detect", "selected")).pack(side=LEFT, padx=4)
 
         # 设置：SSH 密钥
         setf = ttkb.Frame(root)
@@ -1082,48 +1125,50 @@ class RemoteLockApp:
         var = tk.BooleanVar(value=self.selection[name])
         self.sel_vars[name] = var
         cells = {}
+        CI = self.COL_IDX
 
         cb = ttkb.Checkbutton(self.inner, variable=var, bootstyle="round-toggle",
                               command=lambda n=name: self._on_check(n))
-        cb.grid(row=r, column=0, sticky="ew", padx=1)
+        cb.grid(row=r, column=CI["sel"], sticky="ew", padx=1)
         cells["sel"] = cb
         cb.bind("<Button-1>", lambda e, n=name: self.on_row_click(n))
 
         name_l = ttkb.Label(self.inner, text=name, anchor=W)
-        name_l.grid(row=r, column=1, sticky="ew", padx=3)
+        name_l.grid(row=r, column=CI["name"], sticky="ew", padx=3)
         cells["name"] = name_l
 
         ip_l = ttkb.Label(self.inner, text=m["ip"], anchor=W)
-        ip_l.grid(row=r, column=2, sticky="ew", padx=3)
+        ip_l.grid(row=r, column=CI["ip"], sticky="ew", padx=3)
         cells["ip"] = ip_l
 
         user_l = ttkb.Label(self.inner, text=m["sshUser"], anchor=W)
-        user_l.grid(row=r, column=3, sticky="ew", padx=3)
+        user_l.grid(row=r, column=CI["user"], sticky="ew", padx=3)
         cells["user"] = user_l
 
         rdp_l = ttkb.Label(self.inner, text=("是" if m.get("rdp", True) else "否"),
                            anchor=CENTER)
-        rdp_l.grid(row=r, column=4, sticky="ew", padx=1)
+        rdp_l.grid(row=r, column=CI["rdp"], sticky="ew", padx=1)
         cells["rdp"] = rdp_l
 
         st = self.status.get(name, "-")
         status_l = ttkb.Label(self.inner, text=st, anchor=CENTER)
-        status_l.grid(row=r, column=5, sticky="ew", padx=1)
+        status_l.grid(row=r, column=CI["status"], sticky="ew", padx=1)
         cells["status"] = status_l
 
-        notes_l = ttkb.Label(self.inner, text=m.get("notes", ""), anchor=W)
-        notes_l.grid(row=r, column=6, sticky="ew", padx=3)
-        cells["notes"] = notes_l
-
         ops = ttkb.Frame(self.inner)
-        ops.grid(row=r, column=7, sticky="ew", padx=1)
-        ttkb.Button(ops, text="锁定", image=self.lock_closed_img, compound=LEFT,
-                    width=8, bootstyle="warning-outline",
+        ops.grid(row=r, column=CI["ops"], sticky="ew", padx=1)
+        # 操作按钮：无文字、仅图标、彩色填充、紧凑方形
+        ttkb.Button(ops, image=self.lock_closed_img, bootstyle="warning",
                     command=lambda n=name: self.run_action("lock", "one", n)).pack(side=LEFT, padx=1)
-        ttkb.Button(ops, text="解锁", image=self.lock_open_img, compound=LEFT,
-                    width=8, bootstyle="success-outline",
+        ttkb.Button(ops, image=self.lock_open_img, bootstyle="success",
                     command=lambda n=name: self.run_action("unlock", "one", n)).pack(side=LEFT, padx=1)
+        ttkb.Button(ops, image=self.detect_img, bootstyle="info",
+                    command=lambda n=name: self.run_action("detect", "one", n)).pack(side=LEFT, padx=1)
         cells["ops"] = ops
+
+        notes_l = ttkb.Label(self.inner, text=m.get("notes", ""), anchor=W)
+        notes_l.grid(row=r, column=CI["notes"], sticky="ew", padx=3)
+        cells["notes"] = notes_l
 
         for cid in ("name", "ip", "user", "rdp", "status", "notes"):
             cells[cid].bind("<Button-1>", lambda e, n=name: self.on_row_click(n))
@@ -1527,7 +1572,7 @@ class RemoteLockApp:
             self.root.after(0, self.rebuild_rows)
         self.log_msg(f"=== 部署完成: 成功 {ok}  失败 {fail} ===", "ok" if fail == 0 else "warn")
 
-    # ---- 执行锁/解锁 ----
+    # ---- 执行锁/解锁/检测 ----
     def run_action(self, action, scope, name=None):
         if self.busy:
             self.info("上一批操作正在进行，请稍候")
@@ -1539,6 +1584,9 @@ class RemoteLockApp:
             targets = [name] if name else []
         else:
             targets = [n for n, v in self.selection.items() if v]
+            # 检测按钮便捷语义：未勾选任何机器时直接检测全部
+            if not targets and action == "detect":
+                targets = [m["name"] for m in self.cfg["machines"]]
         if not targets:
             self.info("没有选中的机器")
             return
@@ -1551,10 +1599,15 @@ class RemoteLockApp:
             m = next((x for x in self.cfg["machines"] if x["name"] == name), None)
             if not m:
                 return name, "skip", None
-            self.set_status(name, "执行中")
+            if action == "detect":
+                self.set_status(name, "检测中")
+            else:
+                self.set_status(name, "执行中")
             try:
                 if action == "lock":
                     return name, "lock", lock_machine(m, key, self.log_msg)
+                if action == "detect":
+                    return name, "detect", detect_state(m, key, self.log_msg)
                 return name, "unlock", unlock_machine(m, key, self.log_msg)
             except Exception as e:  # noqa
                 return name, "exc", e
@@ -1578,6 +1631,20 @@ class RemoteLockApp:
                     else:
                         fail += 1
                         self.set_status(name, "失败")
+                elif kind == "detect":
+                    state = res[1] if isinstance(res, tuple) else "unknown"
+                    if state == "locked":
+                        ok += 1
+                        self.set_status(name, "已锁")
+                    elif state == "unlocked":
+                        ok += 1
+                        self.set_status(name, "未锁")
+                    elif state == "offline":
+                        fail += 1
+                        self.set_status(name, "离线")
+                    else:
+                        fail += 1
+                        self.set_status(name, "未知")
                 else:  # unlock
                     if res is None:
                         skip += 1
