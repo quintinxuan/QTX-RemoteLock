@@ -18,12 +18,12 @@ VSVersionInfo(
                     [
                         StringStruct(u'CompanyName', u'QTX'),
                         StringStruct(u'FileDescription', u'QTX-RemoteLock 远程锁屏管理工具'),
-                        StringStruct(u'FileVersion', u'1.0.16.0'),
+                        StringStruct(u'FileVersion', u'1.0.17.0'),
                         StringStruct(u'InternalName', u'QTX-RemoteLock'),
                         StringStruct(u'LegalCopyright', u'Copyright (C) QTX'),
-                        StringStruct(u'OriginalFilename', u'QTX-RemoteLock-v1.0.16.exe'),
+                        StringStruct(u'OriginalFilename', u'QTX-RemoteLock-v1.0.17.exe'),
                         StringStruct(u'ProductName', u'QTX-RemoteLock'),
-                        StringStruct(u'ProductVersion', u'1.0.16.0'),
+                        StringStruct(u'ProductVersion', u'1.0.17.0'),
                     ],
                 )
             ]
