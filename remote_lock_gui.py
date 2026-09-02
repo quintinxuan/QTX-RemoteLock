@@ -32,7 +32,7 @@ except Exception:  # noqa
 # 品牌与版本
 # ----------------------------------------------------------------------------
 APP_NAME = "QTX-RemoteLock"
-APP_VERSION = "1.0.19"
+APP_VERSION = "1.0.20"
 APP_TITLE = "%s v%s" % (APP_NAME, APP_VERSION)
 
 _ICON_TMP = None
@@ -959,7 +959,7 @@ class RemoteLockApp:
                            values=[l for l, _ in THEME_LABELS])
         cb.pack(side=RIGHT, padx=(4, 10))
         cb.bind("<<ComboboxSelected>>", self.on_theme_change)
-        ttkb.Label(hdr, text="主题:", bootstyle="secondary").pack(side=RIGHT)
+        ttkb.Label(hdr, text="主题:").pack(side=RIGHT)
 
         # 菜单栏
         menubar = tk.Menu(root)
@@ -1038,7 +1038,7 @@ class RemoteLockApp:
                     command=lambda: self.run_action("detect", "selected")).pack(side=LEFT, padx=4)
 
         # 日志面板
-        ttkb.Label(root, text="运行日志", bootstyle="secondary").pack(anchor=W, padx=12)
+        ttkb.Label(root, text="运行日志").pack(anchor=W, padx=12)
         self.log = ttkb.ScrolledText(root, height=10, autohide=True,
                                      font=("Consolas", 9))
         self.log.pack(fill=BOTH, expand=YES, padx=10, pady=(2, 8))
@@ -1090,7 +1090,7 @@ class RemoteLockApp:
         self.header = {}
         for c, (cid, label, _w, sortable) in enumerate(self.LIST_COLS):
             lbl = ttkb.Label(self.inner, text=label, anchor=CENTER,
-                             font=("Segoe UI", 9, "bold"), bootstyle="secondary")
+                             font=("Segoe UI", 9, "bold"))
             lbl.grid(row=0, column=c, sticky="ew", padx=1, pady=3)
             if sortable:
                 lbl.configure(cursor="hand2")
@@ -1553,7 +1553,7 @@ class RemoteLockApp:
         ttkb.Label(win, text="用密码登录被控机一次，写入控制端公钥；之后全程走密钥。",
                    bootstyle="warning").pack(anchor=W, padx=14, pady=(12, 2))
         ttkb.Label(win, text="密码仅在本次操作的内存中使用，不会写入任何配置文件。",
-                   bootstyle="secondary").pack(anchor=W, padx=14, pady=(0, 8))
+                   ).pack(anchor=W, padx=14, pady=(0, 8))
 
         # 统一密码
         topf = ttkb.Frame(win)
@@ -1586,8 +1586,8 @@ class RemoteLockApp:
             row = ttkb.Frame(holder)
             row.pack(fill=X, pady=2)
             ttkb.Label(row, text=n, width=12).pack(side=LEFT)
-            ttkb.Label(row, text=m["ip"], width=16, bootstyle="secondary").pack(side=LEFT)
-            ttkb.Label(row, text=m["sshUser"], width=10, bootstyle="secondary").pack(side=LEFT)
+            ttkb.Label(row, text=m["ip"], width=16).pack(side=LEFT)
+            ttkb.Label(row, text=m["sshUser"], width=10).pack(side=LEFT)
             v = tk.StringVar()
             pw_vars[n] = v
             ttkb.Entry(row, textvariable=v, show="*", width=20).pack(side=LEFT, padx=4)
@@ -1610,11 +1610,11 @@ class RemoteLockApp:
         rdpcf = ttkb.Frame(win)
         rdpcf.pack(fill=X, padx=14, pady=(2, 2))
         ttkb.Label(rdpcf, text="RDP 用户名（留空=与 SSH 用户相同）:",
-                   bootstyle="secondary").pack(side=LEFT)
+                   ).pack(side=LEFT)
         rdp_user_var = tk.StringVar()
         ttkb.Entry(rdpcf, textvariable=rdp_user_var, width=22).pack(side=LEFT, padx=6)
         ttkb.Label(win, text="RDP 密码默认使用上方各机器的部署密码（即 Windows 登录密码）。",
-                   bootstyle="secondary").pack(anchor=W, padx=14, pady=(0, 6))
+                   ).pack(anchor=W, padx=14, pady=(0, 6))
 
         result = {}
 
