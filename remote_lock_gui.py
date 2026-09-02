@@ -16,7 +16,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import subprocess
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 
 import base64
 import ttkbootstrap as ttkb
@@ -32,7 +32,7 @@ except Exception:  # noqa
 # 品牌与版本
 # ----------------------------------------------------------------------------
 APP_NAME = "QTX-RemoteLock"
-APP_VERSION = "1.0.17"
+APP_VERSION = "1.0.18"
 APP_TITLE = "%s v%s" % (APP_NAME, APP_VERSION)
 
 _ICON_TMP = None
@@ -961,6 +961,17 @@ class RemoteLockApp:
         cb.bind("<<ComboboxSelected>>", self.on_theme_change)
         ttkb.Label(hdr, text="主题:", bootstyle="secondary").pack(side=RIGHT)
 
+        # 菜单栏
+        menubar = tk.Menu(root)
+        fm = tk.Menu(menubar, tearoff=0)
+        fm.add_command(label="导出配置...", command=self.export_config)
+        fm.add_command(label="导入配置...", command=self.import_config)
+        menubar.add_cascade(label="文件", menu=fm)
+        sm = tk.Menu(menubar, tearoff=0)
+        sm.add_command(label="高级设置...", command=self.open_settings)
+        menubar.add_cascade(label="设置", menu=sm)
+        root.configure(menu=menubar)
+
         # 工具栏
         bar = ttkb.Frame(root)
         bar.pack(fill=X, padx=10, pady=4)
@@ -1025,16 +1036,6 @@ class RemoteLockApp:
         ttkb.Button(act, text="检测状态", image=self.detect_img,
                     compound=LEFT, bootstyle="info", width=14,
                     command=lambda: self.run_action("detect", "selected")).pack(side=LEFT, padx=4)
-
-        # 设置：SSH 密钥
-        setf = ttkb.Frame(root)
-        setf.pack(fill=X, padx=10, pady=(2, 4))
-        ttkb.Label(setf, text="SSH 私钥:", bootstyle="secondary").pack(side=LEFT)
-        self.key_var = tk.StringVar(value=self.cfg.get("sshKeyPath", ""))
-        self.key_entry = ttkb.Entry(setf, textvariable=self.key_var, width=70)
-        self.key_entry.pack(side=LEFT, padx=4, fill=X, expand=YES)
-        ttkb.Button(setf, text="保存设置", bootstyle="info", width=10,
-                    command=self.save_settings).pack(side=LEFT, padx=4)
 
         # 日志面板
         ttkb.Label(root, text="运行日志", bootstyle="secondary").pack(anchor=W, padx=12)
@@ -1383,10 +1384,117 @@ class RemoteLockApp:
         self.rebuild_rows()
         self.log_msg(f"已删除机器 {name}")
 
-    def save_settings(self):
-        self.cfg["sshKeyPath"] = self.key_var.get().strip()
-        save_config(self.cfg)
-        self.log_msg(f"设置已保存：SSH 私钥 = {self.cfg['sshKeyPath']}")
+    # ---- 配置导入/导出 ----
+    def export_config(self):
+        """导出完整配置（machines.json 全文）到用户指定路径。"""
+        d = time.strftime("%Y%m%d")
+        path = filedialog.asksaveasfilename(
+            title="导出配置",
+            initialfile="QTX-RemoteLock-config-%s.json" % d,
+            defaultextension=".json",
+            filetypes=[("JSON 文件", "*.json"), ("所有文件", "*.*")])
+        if not path:
+            return
+        try:
+            shutil.copy2(CONFIG_PATH, path)
+            self.log_msg("配置已导出：%s" % path, "ok")
+        except Exception as e:
+            messagebox.showerror("导出失败", "导出失败：\n%s" % e)
+
+    def import_config(self):
+        """导入配置：先自动备份当前配置，再让用户选择覆盖或合并追加。"""
+        if self.busy:
+            self.info("上一批操作正在进行，请稍候")
+            return
+        path = filedialog.askopenfilename(
+            title="导入配置",
+            filetypes=[("JSON 文件", "*.json"), ("所有文件", "*.*")])
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                new = json.load(f)
+        except Exception as e:
+            messagebox.showerror("导入失败", "无法读取或解析所选文件：\n%s" % e)
+            return
+        if not isinstance(new, dict) or not isinstance(new.get("machines"), list):
+            messagebox.showerror("导入失败", "文件格式不正确：缺少 machines 列表。")
+            return
+        # 自动备份当前配置（改配置先备份）
+        backup = CONFIG_PATH + ".bak"
+        try:
+            shutil.copy2(CONFIG_PATH, backup)
+        except Exception:
+            backup = None
+        choice = messagebox.askyesnocancel(
+            "导入方式",
+            "如何处理现有配置？\n\n"
+            "「是」：覆盖现有配置（已自动备份到 %s）\n"
+            "「否」：合并追加（新机器加入，重名跳过）\n"
+            "「取消」：放弃导入" % (backup or "临时位置"))
+        if choice is None:
+            return
+        if choice:
+            merged = new
+            self.log_msg("配置导入：覆盖模式", "ok")
+        else:
+            existing = {m.get("name") for m in self.cfg.get("machines", [])
+                        if isinstance(m, dict)}
+            added = 0
+            for m in new.get("machines", []):
+                if isinstance(m, dict) and m.get("name") not in existing:
+                    self.cfg.setdefault("machines", []).append(m)
+                    added += 1
+            merged = self.cfg
+            self.log_msg("配置导入：合并追加，新增 %d 台、跳过 %d 台重名"
+                         % (added, len(new.get("machines", [])) - added), "ok")
+        # 补齐字段，兼容旧/外部导出的文件
+        merged.setdefault("sshKeyPath", DEFAULT_CONFIG["sshKeyPath"])
+        for k in ("theme", "columnWidths", "sortColumn", "sortDesc"):
+            if k not in merged:
+                merged[k] = json.loads(json.dumps(DEFAULT_CONFIG[k]))
+        save_config(merged)
+        self.cfg = merged
+        # 刷新主题与列表
+        self.theme_mode = self.cfg.get("theme", "system")
+        self.theme_var.set(next((l for l, v in THEME_LABELS if v == self.theme_mode),
+                                "跟随系统"))
+        self.apply_theme()
+        self.selection.clear()
+        for m in self.cfg["machines"]:
+            self.selection.setdefault(m["name"], True)
+        self.rebuild_rows()
+        self.log_msg("配置已导入完成", "ok")
+
+    def open_settings(self):
+        """高级设置对话框：承载低频配置项（如 SSH 私钥路径）。"""
+        win = tk.Toplevel(self.root)
+        win.title("高级设置")
+        set_window_icon(win)
+        f = ttkb.Frame(win, padding=14)
+        f.pack(fill=BOTH, expand=YES)
+        ttkb.Label(f, text="SSH 私钥路径:", bootstyle="secondary").pack(anchor=W, pady=(0, 4))
+        key_var = tk.StringVar(value=self.cfg.get("sshKeyPath", ""))
+        ttkb.Entry(f, textvariable=key_var, width=70).pack(fill=X, pady=(0, 6))
+        ttkb.Label(f, text="默认 %USERPROFILE%\\.ssh\\id_ed25519，一般无需修改；"
+                           "修改后保存即生效。",
+                   bootstyle="secondary", font=("Segoe UI", 9)).pack(anchor=W, pady=(0, 12))
+
+        def do_save():
+            self.cfg["sshKeyPath"] = key_var.get().strip() or DEFAULT_CONFIG["sshKeyPath"]
+            save_config(self.cfg)
+            self.log_msg("高级设置已保存：SSH 私钥 = %s" % self.cfg["sshKeyPath"])
+            win.destroy()
+
+        btn = ttkb.Frame(f)
+        btn.pack(anchor=E)
+        ttkb.Button(btn, text="取消", bootstyle="secondary", width=10,
+                    command=win.destroy).pack(side=LEFT, padx=4)
+        ttkb.Button(btn, text="保存", bootstyle="success", width=10,
+                    command=do_save).pack(side=LEFT, padx=4)
+        win.transient(self.root)
+        win.grab_set()
+        win.focus_set()
 
     # ---- 连接测试 ----
     def test_selected(self):

@@ -3,7 +3,7 @@
 远程锁屏 / 解锁管理工具（Windows）。图形界面批量管理多台 Windows 机器，
 通过 SSH + 远程桌面（RDP / tscon）实现一键锁定与解锁，无需逐台操作。
 
-当前版本：**v1.0.17**
+当前版本：**v1.0.18**
 
 ## 功能
 
@@ -16,12 +16,14 @@
 - 列宽可手动拖拽，宽度与排序状态持久化保存
 - 配置自动迁移：旧版 `RemoteLock` 配置目录会自动迁移到 `QTX-RemoteLock`
 - 部署密钥时可一并把 RDP 凭据写入 Windows 凭据管理器，解锁自动登录、免输密码
+- 配置导入 / 导出：菜单「文件」可导出或导入完整配置（含机器清单与界面设置）；导入时自动备份当前配置，可选「覆盖」或「合并追加」
+- SSH 私钥路径等低频配置移至菜单「设置 → 高级设置」，主界面不再常驻该输入框
 
 ## 快速开始
 
 ### 方式一：直接使用安装包
 
-下载 `QTX-RemoteLock-v1.0.17.exe`，双击即运行，无需安装 Python。
+下载 `QTX-RemoteLock-v1.0.18.exe`，双击即运行，无需安装 Python。
 
 ### 方式二：从源码运行
 
@@ -55,12 +57,12 @@ python remote_lock_gui.py
 
 ```bash
 pip install pyinstaller ttkbootstrap paramiko
-pyinstaller --onefile --windowed --name QTX-RemoteLock-v1.0.17 \
+pyinstaller --onefile --windowed --name QTX-RemoteLock-v1.0.18 \
   --collect-data ttkbootstrap --hidden-import paramiko \
   --version-file version_info.txt --icon assets/icon.ico remote_lock_gui.py
 ```
 
-生成的安装包位于 `dist/QTX-RemoteLock-v1.0.17.exe`。
+生成的安装包位于 `dist/QTX-RemoteLock-v1.0.18.exe`。
 
 ## 说明
 
