@@ -32,7 +32,7 @@ except Exception:  # noqa
 # 品牌与版本
 # ----------------------------------------------------------------------------
 APP_NAME = "QTX-RemoteLock"
-APP_VERSION = "1.0.18"
+APP_VERSION = "1.0.19"
 APP_TITLE = "%s v%s" % (APP_NAME, APP_VERSION)
 
 _ICON_TMP = None
@@ -1473,12 +1473,12 @@ class RemoteLockApp:
         set_window_icon(win)
         f = ttkb.Frame(win, padding=14)
         f.pack(fill=BOTH, expand=YES)
-        ttkb.Label(f, text="SSH 私钥路径:", bootstyle="secondary").pack(anchor=W, pady=(0, 4))
+        ttkb.Label(f, text="SSH 私钥路径:").pack(anchor=W, pady=(0, 4))
         key_var = tk.StringVar(value=self.cfg.get("sshKeyPath", ""))
         ttkb.Entry(f, textvariable=key_var, width=70).pack(fill=X, pady=(0, 6))
         ttkb.Label(f, text="默认 %USERPROFILE%\\.ssh\\id_ed25519，一般无需修改；"
                            "修改后保存即生效。",
-                   bootstyle="secondary", font=("Segoe UI", 9)).pack(anchor=W, pady=(0, 12))
+                   font=("Segoe UI", 9)).pack(anchor=W, pady=(0, 12))
 
         def do_save():
             self.cfg["sshKeyPath"] = key_var.get().strip() or DEFAULT_CONFIG["sshKeyPath"]
@@ -1493,6 +1493,7 @@ class RemoteLockApp:
         ttkb.Button(btn, text="保存", bootstyle="success", width=10,
                     command=do_save).pack(side=LEFT, padx=4)
         win.transient(self.root)
+        apply_titlebar(win, self.dark)
         win.grab_set()
         win.focus_set()
 
