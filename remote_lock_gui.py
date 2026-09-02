@@ -32,7 +32,7 @@ except Exception:  # noqa
 # 品牌与版本
 # ----------------------------------------------------------------------------
 APP_NAME = "QTX-RemoteLock"
-APP_VERSION = "1.0.20"
+APP_VERSION = "1.0.21"
 APP_TITLE = "%s v%s" % (APP_NAME, APP_VERSION)
 
 _ICON_TMP = None
@@ -929,7 +929,7 @@ class RemoteLockApp:
         self.dark = resolve_dark(self.theme_mode)
         self._last_sys_dark = system_is_dark()
 
-        self._hl_bg = "#dbeafe" if self.dark else "#33415c"
+        self._hl_bg = "#33415c" if self.dark else "#dbeafe"
 
         # 排序状态
         self.sort_col = self.cfg.get("sortColumn", "") or ""
@@ -1016,7 +1016,7 @@ class RemoteLockApp:
             self.inner.columnconfigure(
                 c, minsize=self.COL_W[cid], weight=(1 if cid == "notes" else 0))
         self._build_header()
-        self._hl_bg = "#dbeafe" if self.dark else "#33415c"
+        self._hl_bg = "#33415c" if self.dark else "#dbeafe"
 
         # 操作按钮区（锁定/解锁/检测；白图标配彩色填充按钮，避免顺色）
         act = ttkb.Frame(root)
@@ -1228,6 +1228,22 @@ class RemoteLockApp:
             self.log_msg("主题切换失败: %s" % e, "err")
             return
         apply_titlebar(self.root, dark)
+        # 行背景在 _highlight 里被显式 configure 过 background，theme_use 不会自动重绘；
+        # 且 _normal_bg 原先写死 SystemButtonFace（暗色下是浅色 → 白底白字整列看不见），
+        # 改为跟随主题 bg。切换主题后重设所有已建行。
+        try:
+            self._normal_bg = self.root.style.colors.bg
+            self._hl_bg = "#33415c" if dark else "#dbeafe"
+            hl = getattr(self, "_hl", None)
+            for name, cells in self.cells.items():
+                bg = self._hl_bg if name == hl else self._normal_bg
+                for w in cells.values():
+                    try:
+                        w.configure(background=bg)
+                    except Exception:  # noqa
+                        pass
+        except Exception:  # noqa
+            pass
         # ScrolledText 是原生 Text，主题切换不会自动重绘，需手动同步配色
         try:
             colors = self.root.style.colors
