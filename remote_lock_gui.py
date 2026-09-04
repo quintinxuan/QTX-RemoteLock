@@ -32,7 +32,7 @@ except Exception:  # noqa
 # 品牌与版本
 # ----------------------------------------------------------------------------
 APP_NAME = "QTX-RemoteLock"
-APP_VERSION = "1.0.21"
+APP_VERSION = "1.0.22"
 APP_TITLE = "%s v%s" % (APP_NAME, APP_VERSION)
 
 _ICON_TMP = None
@@ -946,8 +946,8 @@ class RemoteLockApp:
                    bootstyle="warning").pack(side=LEFT)
         ttkb.Label(hdr, text="v" + APP_VERSION, font=("Segoe UI", 10, "bold"),
                    bootstyle="info").pack(side=LEFT, padx=(6, 0), pady=(6, 0))
-        ttkb.Label(hdr, text="远程锁屏 / 解锁管理", font=("Segoe UI", 10),
-                   bootstyle="secondary").pack(side=LEFT, padx=(10, 0), pady=(6, 0))
+        ttkb.Label(hdr, text="远程锁屏 / 解锁管理",
+                   font=("Segoe UI", 10)).pack(side=LEFT, padx=(10, 0), pady=(6, 0))
 
         # 主题切换（右上角）
         ttkb.Button(hdr, text="关于", bootstyle="link",
@@ -961,16 +961,15 @@ class RemoteLockApp:
         cb.bind("<<ComboboxSelected>>", self.on_theme_change)
         ttkb.Label(hdr, text="主题:").pack(side=RIGHT)
 
-        # 菜单栏
-        menubar = tk.Menu(root)
-        fm = tk.Menu(menubar, tearoff=0)
-        fm.add_command(label="导出配置...", command=self.export_config)
-        fm.add_command(label="导入配置...", command=self.import_config)
-        menubar.add_cascade(label="文件", menu=fm)
-        sm = tk.Menu(menubar, tearoff=0)
-        sm.add_command(label="高级设置...", command=self.open_settings)
-        menubar.add_cascade(label="设置", menu=sm)
-        root.configure(menu=menubar)
+        # 低频操作入口（配置导入导出 / 高级设置）作为扁平小按钮并入标题行，
+        # 放在「主题:」左侧。不再使用菜单：原生 tk.Menu 在 Windows 不跟随
+        # ttkbootstrap 主题（暗色下恒为白），自绘下拉又与整体风格不一致。
+        ttkb.Button(hdr, text="高级设置", bootstyle="secondary-outline", width=10,
+                    command=self.open_settings).pack(side=RIGHT, padx=(4, 6))
+        ttkb.Button(hdr, text="导入配置", bootstyle="secondary-outline", width=10,
+                    command=self.import_config).pack(side=RIGHT, padx=2)
+        ttkb.Button(hdr, text="导出配置", bootstyle="secondary-outline", width=10,
+                    command=self.export_config).pack(side=RIGHT, padx=2)
 
         # 工具栏
         bar = ttkb.Frame(root)
